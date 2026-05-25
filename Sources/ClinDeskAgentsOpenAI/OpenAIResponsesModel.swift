@@ -6,6 +6,9 @@ import ClinDeskAgents
 
 public struct OpenAIResponsesModel: Model {
     public typealias Transport = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
+    public static var defaultModel: String {
+        ProcessInfo.processInfo.environment["OPENAI_DEFAULT_MODEL"]?.lowercased() ?? "gpt-5.4-mini"
+    }
 
     public var model: String
     public var apiKey: String
@@ -15,7 +18,7 @@ public struct OpenAIResponsesModel: Model {
     public var transport: Transport
 
     public init(
-        model: String = "gpt-5",
+        model: String = OpenAIResponsesModel.defaultModel,
         apiKey: String? = ProcessInfo.processInfo.environment["OPENAI_API_KEY"],
         baseURL: URL = URL(string: "https://api.openai.com/v1")!,
         organization: String? = ProcessInfo.processInfo.environment["OPENAI_ORG_ID"],
@@ -79,7 +82,7 @@ public struct OpenAIProvider: ModelProvider {
 
     public func model(named name: String?) async throws -> any Model {
         OpenAIResponsesModel(
-            model: name ?? "gpt-5",
+            model: name ?? OpenAIResponsesModel.defaultModel,
             apiKey: apiKey,
             baseURL: baseURL,
             organization: organization,
@@ -198,7 +201,7 @@ private extension OpenAIResponsesModel {
             return [
                 "type": "function_call_output",
                 "call_id": .string(output.callID),
-                "output": .string(output.output.prettyPrinted())
+                "output": .string(output.output.toolOutputString)
             ]
         case .reasoning(let value), .raw(let value):
             return value
@@ -227,7 +230,10 @@ private extension OpenAIResponsesModel {
             outputValues = []
         }
 
-        let output = try outputValues.map(decodeOutputItem)
+        var output = try outputValues.map(decodeOutputItem)
+        if output.isEmpty, let outputText = object["output_text"]?.stringValue, !outputText.isEmpty {
+            output.append(.message(AgentMessage(role: .assistant, content: outputText)))
+        }
         return ModelResponse(
             id: id,
             output: output,
@@ -301,5 +307,12 @@ private extension JSONValue {
             return nil
         }
         return Int(number)
+    }
+
+    var toolOutputString: String {
+        if case .string(let string) = self {
+            return string
+        }
+        return prettyPrinted()
     }
 }

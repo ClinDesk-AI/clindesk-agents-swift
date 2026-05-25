@@ -31,6 +31,15 @@ public enum ToolOutput: Equatable, Sendable {
             return value
         }
     }
+
+    public var finalOutputText: String {
+        switch self {
+        case .text(let text):
+            return text
+        case .json(let value):
+            return value.prettyPrinted()
+        }
+    }
 }
 
 public struct ToolContext<Context: Sendable>: Sendable {
@@ -113,6 +122,12 @@ public struct FunctionTool<Context: Sendable>: Sendable {
             inputGuardrails: inputGuardrails,
             outputGuardrails: outputGuardrails
         ) { context, json in
+            guard case .object = json else {
+                throw AgentsError.invalidToolArguments(
+                    toolName: name,
+                    reason: "Function tool input must be a JSON object."
+                )
+            }
             do {
                 let input = try json.decoded(Input.self, using: decoder)
                 return try await execute(context, input)

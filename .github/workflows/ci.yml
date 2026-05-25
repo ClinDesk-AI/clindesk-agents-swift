@@ -21,3 +21,12 @@ jobs:
           swift-version: "6.1"
       - name: Run tests
         run: swift test
+
+  ios-build:
+    name: iOS Build
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build iOS simulator
+        run: xcodebuild -scheme ClinDeskAgentsOpenAI -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO

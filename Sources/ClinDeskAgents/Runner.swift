@@ -5,15 +5,27 @@ public enum Runner {
         agent: Agent<Context>,
         input: String,
         context: Context? = nil,
+        maxTurns: Int? = nil,
+        hooks: RunHooks<Context>? = nil,
         modelProvider: (any ModelProvider)? = nil,
-        runConfig: RunConfig<Context> = RunConfig()
+        runConfig: RunConfig<Context> = RunConfig(),
+        previousResponseID: String? = nil,
+        autoPreviousResponseID: Bool = false,
+        conversationID: String? = nil,
+        session: (any Session)? = nil
     ) async throws -> RunResult {
         try await run(
             agent: agent,
             input: [.message(AgentMessage(role: .user, content: input))],
             context: context,
+            maxTurns: maxTurns,
+            hooks: hooks,
             modelProvider: modelProvider,
-            runConfig: runConfig
+            runConfig: runConfig,
+            previousResponseID: previousResponseID,
+            autoPreviousResponseID: autoPreviousResponseID,
+            conversationID: conversationID,
+            session: session
         )
     }
 
@@ -21,15 +33,40 @@ public enum Runner {
         agent: Agent<Context>,
         input: [ModelInputItem],
         context: Context? = nil,
+        maxTurns: Int? = nil,
+        hooks: RunHooks<Context>? = nil,
         modelProvider: (any ModelProvider)? = nil,
-        runConfig: RunConfig<Context> = RunConfig()
+        runConfig: RunConfig<Context> = RunConfig(),
+        previousResponseID: String? = nil,
+        autoPreviousResponseID: Bool = false,
+        conversationID: String? = nil,
+        session: (any Session)? = nil
     ) async throws -> RunResult {
+        var resolvedConfig = runConfig
+        if let maxTurns {
+            resolvedConfig.maxTurns = maxTurns
+        }
+        if let hooks {
+            resolvedConfig.hooks = hooks
+        }
+        if let previousResponseID {
+            resolvedConfig.previousResponseID = previousResponseID
+        }
+        if autoPreviousResponseID {
+            resolvedConfig.autoPreviousResponseID = true
+        }
+        if let conversationID {
+            resolvedConfig.conversationID = conversationID
+        }
+        if let session {
+            resolvedConfig.session = session
+        }
         let loop = RunnerLoop(
             startingAgent: agent,
             input: input,
             contextValue: context,
             modelProvider: modelProvider,
-            config: runConfig
+            config: resolvedConfig
         )
         return try await loop.run()
     }
@@ -38,11 +75,35 @@ public enum Runner {
         agent: Agent<Context>,
         input: String,
         context: Context? = nil,
+        maxTurns: Int? = nil,
+        hooks: RunHooks<Context>? = nil,
         modelProvider: (any ModelProvider)? = nil,
-        runConfig: RunConfig<Context> = RunConfig()
+        runConfig: RunConfig<Context> = RunConfig(),
+        previousResponseID: String? = nil,
+        autoPreviousResponseID: Bool = false,
+        conversationID: String? = nil,
+        session: (any Session)? = nil
     ) -> AsyncThrowingStream<RunStreamEvent<Context>, Error> {
         AsyncThrowingStream { continuation in
             var config = runConfig
+            if let maxTurns {
+                config.maxTurns = maxTurns
+            }
+            if let hooks {
+                config.hooks = hooks
+            }
+            if let previousResponseID {
+                config.previousResponseID = previousResponseID
+            }
+            if autoPreviousResponseID {
+                config.autoPreviousResponseID = true
+            }
+            if let conversationID {
+                config.conversationID = conversationID
+            }
+            if let session {
+                config.session = session
+            }
             let existingHooks = config.hooks
             config.hooks = RunHooks(
                 onAgentStart: { agent in
@@ -104,6 +165,8 @@ private struct RunnerLoop<Context: Sendable> {
     let config: RunConfig<Context>
 
     func run() async throws -> RunResult {
+        try validateConfig()
+
         let runContext = RunContext(context: contextValue)
         var trace = Trace(
             id: config.traceID ?? UUID().uuidString,
@@ -114,9 +177,10 @@ private struct RunnerLoop<Context: Sendable> {
         )
 
         var currentAgent = startingAgent
-        var modelInput = try await (config.session?.getItems() ?? []) + input
+        var modelInput = try await prepareInitialInput()
         var newItems = input
         var lastResponseID: String?
+        var explicitPreviousResponseID = config.previousResponseID
 
         try await runInputGuardrails(
             agent: currentAgent,
@@ -125,7 +189,9 @@ private struct RunnerLoop<Context: Sendable> {
             trace: &trace
         )
 
-        for _ in 1...config.maxTurns {
+        var turn = 0
+        while config.maxTurns == nil || turn < (config.maxTurns ?? 0) {
+            turn += 1
             try runContext.throwingIfCancelled()
             trace.items.append(.agentStarted(currentAgent.name))
             config.hooks.onAgentStart(currentAgent)
@@ -135,25 +201,33 @@ private struct RunnerLoop<Context: Sendable> {
             let model = try await resolveModel(for: currentAgent)
             let instructions = try await currentAgent.instructions?.resolve(context: runContext, agent: currentAgent)
             let settings = currentAgent.modelSettings.merging(config.modelSettings)
+            let modelInputData = try await filteredModelInputData(
+                agent: currentAgent,
+                context: runContext,
+                input: modelInput,
+                instructions: instructions
+            )
 
             config.hooks.onModelStart(currentAgent)
             trace.items.append(.modelRequest(currentAgent.name))
             let response = try await model.getResponse(ModelRequest(
-                instructions: instructions,
-                input: modelInput,
+                instructions: modelInputData.instructions,
+                input: modelInputData.input,
                 context: runContext,
                 settings: settings,
                 tools: tools.map(\.descriptor),
                 handoffs: handoffs.map(\.descriptor),
                 outputSchema: currentAgent.outputSchema,
-                previousResponseID: config.previousResponseID ?? lastResponseID,
+                previousResponseID: explicitPreviousResponseID ?? (config.autoPreviousResponseID ? lastResponseID : nil),
                 conversationID: config.conversationID,
-                tracing: config.traceIncludeSensitiveData ? .enabled(includeData: true) : .enabled(includeData: false)
+                tracing: modelTracing
             ))
+            explicitPreviousResponseID = nil
             lastResponseID = response.id
             trace.items.append(.modelResponse(response))
             config.hooks.onModelEnd(response)
 
+            modelInput = modelInputData.input
             let outputInputItems = response.output.map(Self.inputItem(from:))
             modelInput.append(contentsOf: outputInputItems)
             newItems.append(contentsOf: outputInputItems)
@@ -167,7 +241,12 @@ private struct RunnerLoop<Context: Sendable> {
                 config.hooks.onHandoff(handoff)
                 trace.items.append(.handoff(handoff.descriptor.toolName))
                 currentAgent = handoff.agent
-                if let inputFilter = handoff.inputFilter {
+                if let inputFilter = handoff.inputFilter ?? config.handoffInputFilter {
+                    if usesServerManagedConversation {
+                        throw AgentsError.invalidRunConfig(
+                            "Server-managed conversations do not support handoff input filters."
+                        )
+                    }
                     modelInput = try await inputFilter(modelInput)
                 }
                 continue
@@ -237,7 +316,60 @@ private struct RunnerLoop<Context: Sendable> {
             )
         }
 
-        throw AgentsError.maxTurnsExceeded(config.maxTurns)
+        throw AgentsError.maxTurnsExceeded(config.maxTurns ?? turn)
+    }
+
+    private var modelTracing: ModelTracing {
+        if config.tracingDisabled {
+            return .disabled
+        }
+        return config.traceIncludeSensitiveData ? .enabled(includeData: true) : .enabled(includeData: false)
+    }
+
+    private var usesServerManagedConversation: Bool {
+        config.previousResponseID != nil || config.autoPreviousResponseID || config.conversationID != nil
+    }
+
+    private func validateConfig() throws {
+        if let maxTurns = config.maxTurns, maxTurns < 1 {
+            throw AgentsError.invalidRunConfig("maxTurns must be at least 1.")
+        }
+        if config.session != nil, usesServerManagedConversation {
+            throw AgentsError.invalidRunConfig(
+                "Session memory cannot be combined with previousResponseID, autoPreviousResponseID, or conversationID."
+            )
+        }
+        if let limit = config.toolExecution.maxFunctionToolConcurrency, limit < 1 {
+            throw AgentsError.invalidRunConfig("toolExecution.maxFunctionToolConcurrency must be at least 1.")
+        }
+    }
+
+    private func prepareInitialInput() async throws -> [ModelInputItem] {
+        guard let session = config.session else {
+            return input
+        }
+        let history = try await session.getItems()
+        guard let callback = config.sessionInputCallback else {
+            return history + input
+        }
+        return try await callback(history, input)
+    }
+
+    private func filteredModelInputData(
+        agent: Agent<Context>,
+        context: RunContext<Context>,
+        input: [ModelInputItem],
+        instructions: String?
+    ) async throws -> ModelInputData {
+        let modelData = ModelInputData(input: input, instructions: instructions)
+        guard let filter = config.callModelInputFilter else {
+            return modelData
+        }
+        return try await filter(CallModelData(
+            modelData: modelData,
+            agent: agent,
+            context: context.context
+        ))
     }
 
     private func finish(
@@ -255,8 +387,10 @@ private struct RunnerLoop<Context: Sendable> {
         if let session = config.session {
             try await session.addItems(newItems)
         }
-        for processor in config.tracingProcessors {
-            await processor.process(trace)
+        if !config.tracingDisabled {
+            for processor in config.tracingProcessors {
+                await processor.process(trace)
+            }
         }
         return RunResult(
             finalOutput: output,
@@ -324,7 +458,7 @@ private struct RunnerLoop<Context: Sendable> {
         output: String,
         trace: inout Trace
     ) async throws {
-        for guardrail in agent.outputGuardrails {
+        for guardrail in agent.outputGuardrails + config.outputGuardrails {
             let result = try await guardrail.run(context: context, agent: agent, output: output)
             config.hooks.onGuardrail(guardrail.name, result)
             if result.tripwireTriggered {
@@ -335,7 +469,7 @@ private struct RunnerLoop<Context: Sendable> {
     }
 
     private func configInputGuardrails(for agent: Agent<Context>) -> [InputGuardrail<Context>] {
-        agent.inputGuardrails
+        agent.inputGuardrails + config.inputGuardrails
     }
 
     private func runToolCalls(
@@ -344,46 +478,96 @@ private struct RunnerLoop<Context: Sendable> {
         context: RunContext<Context>,
         trace: inout Trace
     ) async throws -> [ToolRunResult] {
-        var results: [ToolRunResult] = []
-        for call in calls {
+        var scheduled: [(offset: Int, tool: FunctionTool<Context>, call: FunctionCall)] = []
+        for (offset, call) in calls.enumerated() {
             guard let tool = tools.first(where: { $0.descriptor.name == call.name }) else {
                 throw AgentsError.toolNotFound(call.name)
             }
-            let toolContext = ToolContext(runContext: context, call: call)
             trace.items.append(.toolCall(call))
             config.hooks.onToolStart(tool, call)
-
-            if let approval = tool.approval {
-                let approved = try await approval(ToolApprovalRequest(context: context, tool: tool.descriptor, call: call))
-                guard approved else {
-                    throw AgentsError.approvalRejected(toolName: tool.descriptor.name)
-                }
-            }
-
-            for guardrail in tool.inputGuardrails {
-                let output = try await guardrail.run(context: toolContext)
-                config.hooks.onGuardrail(guardrail.name, output)
-                if output.tripwireTriggered {
-                    throw AgentsError.toolInputRejected(toolName: tool.descriptor.name, reason: output.outputInfo)
-                }
-            }
-
-            let output = try await tool.run(toolContext)
-
-            for guardrail in tool.outputGuardrails {
-                let result = try await guardrail.run(context: toolContext, output: output)
-                config.hooks.onGuardrail(guardrail.name, result)
-                if result.tripwireTriggered {
-                    throw AgentsError.toolOutputRejected(toolName: tool.descriptor.name, reason: result.outputInfo)
-                }
-            }
-
-            let callOutput = FunctionCallOutput(callID: call.callID, output: output.modelValue)
-            trace.items.append(.toolResult(callOutput))
-            config.hooks.onToolEnd(callOutput)
-            results.append(ToolRunResult(call: call, output: output))
+            scheduled.append((offset, tool, call))
         }
-        return results
+
+        guard !scheduled.isEmpty else {
+            return []
+        }
+
+        let maxConcurrency = min(
+            config.toolExecution.maxFunctionToolConcurrency ?? scheduled.count,
+            scheduled.count
+        )
+        var orderedResults = Array<ToolRunResult?>(repeating: nil, count: scheduled.count)
+
+        return try await withThrowingTaskGroup(of: (Int, ToolRunResult, FunctionCallOutput).self) { group in
+            var nextIndex = 0
+
+            func submitNext() {
+                let job = scheduled[nextIndex]
+                nextIndex += 1
+                group.addTask {
+                    let result = try await executeToolCall(tool: job.tool, call: job.call, context: context)
+                    let output = FunctionCallOutput(callID: job.call.callID, output: result.output.modelValue)
+                    return (job.offset, result, output)
+                }
+            }
+
+            for _ in 0..<maxConcurrency {
+                submitNext()
+            }
+
+            while let (offset, result, callOutput) = try await group.next() {
+                orderedResults[offset] = result
+                trace.items.append(.toolResult(callOutput))
+                config.hooks.onToolEnd(callOutput)
+                if nextIndex < scheduled.count {
+                    submitNext()
+                }
+            }
+
+            var results: [ToolRunResult] = []
+            for result in orderedResults {
+                guard let result else {
+                    throw AgentsError.invalidModelResponse("Function tool result was not produced.")
+                }
+                results.append(result)
+            }
+            return results
+        }
+    }
+
+    private func executeToolCall(
+        tool: FunctionTool<Context>,
+        call: FunctionCall,
+        context: RunContext<Context>
+    ) async throws -> ToolRunResult {
+        let toolContext = ToolContext(runContext: context, call: call)
+
+        if let approval = tool.approval {
+            let approved = try await approval(ToolApprovalRequest(context: context, tool: tool.descriptor, call: call))
+            guard approved else {
+                throw AgentsError.approvalRejected(toolName: tool.descriptor.name)
+            }
+        }
+
+        for guardrail in tool.inputGuardrails {
+            let output = try await guardrail.run(context: toolContext)
+            config.hooks.onGuardrail(guardrail.name, output)
+            if output.tripwireTriggered {
+                throw AgentsError.toolInputRejected(toolName: tool.descriptor.name, reason: output.outputInfo)
+            }
+        }
+
+        let output = try await tool.run(toolContext)
+
+        for guardrail in tool.outputGuardrails {
+            let result = try await guardrail.run(context: toolContext, output: output)
+            config.hooks.onGuardrail(guardrail.name, result)
+            if result.tripwireTriggered {
+                throw AgentsError.toolOutputRejected(toolName: tool.descriptor.name, reason: result.outputInfo)
+            }
+        }
+
+        return ToolRunResult(call: call, output: output)
     }
 
     private func resolveToolUseBehavior(
@@ -395,15 +579,15 @@ private struct RunnerLoop<Context: Sendable> {
         case .runModelAgain:
             return nil
         case .stopOnFirstTool:
-            return results.first?.output.modelValue.prettyPrinted()
+            return results.first?.output.finalOutputText
         case .stopAtTools(let names):
-            return results.first { names.contains($0.call.name) }?.output.modelValue.prettyPrinted()
+            return results.first { names.contains($0.call.name) }?.output.finalOutputText
         case .custom(let resolver):
             let result = try await resolver(context, results)
             guard result.isFinalOutput else {
                 return nil
             }
-            return result.finalOutput ?? results.first?.output.modelValue.prettyPrinted() ?? ""
+            return result.finalOutput ?? results.first?.output.finalOutputText ?? ""
         }
     }
 

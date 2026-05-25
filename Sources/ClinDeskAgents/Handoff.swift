@@ -14,7 +14,7 @@ public struct HandoffDescriptor: Codable, Equatable, Sendable {
 
 public struct Handoff<Context: Sendable>: Sendable {
     public typealias Enabled = @Sendable (RunContext<Context>) async -> Bool
-    public typealias InputFilter = @Sendable ([ModelInputItem]) async throws -> [ModelInputItem]
+    public typealias InputFilter = HandoffInputFilter
 
     public var descriptor: HandoffDescriptor
     public var isEnabled: Enabled

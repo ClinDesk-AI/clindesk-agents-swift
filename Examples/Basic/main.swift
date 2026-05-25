@@ -27,7 +27,7 @@ let agent: Agent<Void> = Agent(
     name: "Clinic Assistant",
     instructions: .text("Answer briefly and use clinic_lookup for clinic facts."),
     tools: [clinicLookup],
-    modelName: "gpt-5"
+    modelName: "gpt-5.4-mini"
 )
 
 let provider = OpenAIProvider()
