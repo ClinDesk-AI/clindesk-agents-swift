@@ -1,0 +1,7 @@
+ClinDesk Agents Swift
+
+This package is developed by ClinDesk LLC and released under the MIT License.
+
+The project is inspired by OpenAI's Agents SDK concepts and public documentation.
+It is not affiliated with or endorsed by OpenAI. No source code from the Python
+SDK is vendored into this package.
