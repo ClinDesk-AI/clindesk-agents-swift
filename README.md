@@ -1,6 +1,6 @@
-# ClinDesk Agents Swift
+# ClinDesk Agents SDK
 
-🧑‍⚕️ **ClinDesk Agents Swift** is a Swift package inspired by OpenAI's Agents SDK and adapted for native Apple platforms. It mirrors the SDK's core concepts as closely as practical in Swift: agents, tools, handoffs, guardrails, sessions, tracing, model providers, and the runner loop.
+🧑‍⚕️ **ClinDesk Agents SDK** is a Swift package inspired by OpenAI's Agents SDK and adapted for native Apple platforms. It mirrors the SDK's core concepts as closely as practical in Swift: agents, tools, handoffs, guardrails, sessions, tracing, model providers, and the runner loop.
 
 ClinDesk is a **privacy-first clinic workspace** for macOS. This package extracts the reusable agent runtime shape behind that work into an open source Swift package that can also be used from iOS applications.
 
@@ -27,6 +27,7 @@ Add the package to your Swift Package Manager dependencies:
 
 ```swift
 .package(
+    name: "clindesk-agents",
     url: "https://github.com/ClinDesk-AI/clindesk-agents-swift.git",
     from: "0.2.0"
 )
@@ -35,8 +36,8 @@ Add the package to your Swift Package Manager dependencies:
 Then add one or both products to your target:
 
 ```swift
-.product(name: "ClinDeskAgents", package: "clindesk-agents-swift")
-.product(name: "ClinDeskAgentsOpenAI", package: "clindesk-agents-swift")
+.product(name: "ClinDeskAgents", package: "clindesk-agents")
+.product(name: "ClinDeskAgentsOpenAI", package: "clindesk-agents")
 ```
 
 Supported platforms:

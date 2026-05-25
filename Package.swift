@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "clindesk-agents-swift",
+    name: "clindesk-agents",
     platforms: [
         .macOS(.v13),
         .iOS(.v16),
