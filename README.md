@@ -12,6 +12,7 @@ This project is open source, free to use, and MIT licensed.
 
 - 🤖 `Agent` definitions with instructions, tools, handoffs, guardrails, model settings, typed context, and tool-use behavior.
 - 🏃 `Runner.run` and `Runner.runStream` for model turns, function tools, handoffs, sessions, tracing, and final output.
+- 📋 Structured outputs with typed `Runner.run(..., outputType:)` results.
 - 🧰 `FunctionTool` support with Swift `Codable` inputs, JSON schemas, enablement checks, approval callbacks, and tool guardrails.
 - 🛡️ Input and output guardrails at both the agent and run-configuration levels.
 - 🔁 Handoffs between agents, including input filters.
@@ -29,7 +30,7 @@ Add the package to your Swift Package Manager dependencies:
 .package(
     name: "clindesk-agents",
     url: "https://github.com/ClinDesk-AI/clindesk-agents-swift.git",
-    from: "0.2.0"
+    from: "0.2.1"
 )
 ```
 
@@ -203,6 +204,35 @@ let result = try await Runner.run(
 ```
 
 Apps that need durable storage can implement the `Session` protocol.
+
+## 📋 Structured Outputs
+
+Use typed runs when an agent should return schema-constrained data instead of free text.
+
+```swift
+struct TriageFrame: Decodable, Sendable {
+    let intent: String
+}
+
+let schema: JSONValue = [
+    "type": "object",
+    "additionalProperties": false,
+    "properties": [
+        "intent": ["type": "string"]
+    ],
+    "required": ["intent"]
+]
+
+let result = try await Runner.run(
+    agent: agent,
+    input: "Need an appointment tomorrow",
+    outputType: TriageFrame.self,
+    outputSchema: schema,
+    modelProvider: OpenAIProvider()
+)
+
+print(result.finalOutput.intent)
+```
 
 ## 📡 OpenAI Provider
 

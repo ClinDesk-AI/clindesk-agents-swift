@@ -28,6 +28,63 @@ struct RunnerTests {
     }
 
     @Test
+    func typedRunDecodesStructuredOutputAndPassesSchema() async throws {
+        let model = FakeModel([
+            ModelResponse(output: [
+                .message(AgentMessage(role: .assistant, content: #"{"answer":"Ready"}"#))
+            ])
+        ])
+        let schema: JSONValue = [
+            "type": "object",
+            "additionalProperties": false,
+            "properties": [
+                "answer": ["type": "string"]
+            ],
+            "required": ["answer"]
+        ]
+        let agent = Agent<Void>(
+            name: "Assistant",
+            instructions: .text("Return a structured answer."),
+            model: model
+        )
+
+        let result = try await Runner.run(
+            agent: agent,
+            input: "Hi",
+            outputType: StructuredAnswer.self,
+            outputSchema: schema
+        )
+
+        #expect(result.finalOutput == StructuredAnswer(answer: "Ready"))
+        #expect(result.rawFinalOutput == #"{"answer":"Ready"}"#)
+        #expect(result.lastAgentName == "Assistant")
+        let requests = await model.requests()
+        #expect(requests.first?.outputSchema == schema)
+    }
+
+    @Test
+    func typedRunRejectsInvalidStructuredOutput() async throws {
+        let model = FakeModel([
+            ModelResponse(output: [
+                .message(AgentMessage(role: .assistant, content: "plain text"))
+            ])
+        ])
+        let agent = Agent<Void>(name: "Assistant", model: model)
+
+        do {
+            _ = try await Runner.run(
+                agent: agent,
+                input: "Hi",
+                outputType: StructuredAnswer.self
+            )
+            Issue.record("Expected invalid structured output")
+        } catch AgentsError.invalidStructuredOutput {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
     func resolvesDynamicInstructionsWithContext() async throws {
         struct ClinicContext: Sendable {
             let clinicName: String
@@ -926,6 +983,7 @@ private struct CapturedModelRequest: Equatable, Sendable {
     var input: [ModelInputItem]
     var tools: [ToolDescriptor]
     var handoffs: [HandoffDescriptor]
+    var outputSchema: JSONValue?
     var previousResponseID: String?
     var conversationID: String?
     var tracing: ModelTracing
@@ -936,11 +994,16 @@ private struct CapturedModelRequest: Equatable, Sendable {
         self.input = request.input
         self.tools = request.tools
         self.handoffs = request.handoffs
+        self.outputSchema = request.outputSchema
         self.previousResponseID = request.previousResponseID
         self.conversationID = request.conversationID
         self.tracing = request.tracing
         self.maxOutputTokens = request.settings.maxOutputTokens
     }
+}
+
+private struct StructuredAnswer: Decodable, Equatable, Sendable {
+    let answer: String
 }
 
 private actor FakeModelStore {

@@ -11,6 +11,7 @@ public enum AgentsError: Error, Equatable, LocalizedError, Sendable {
     case outputGuardrailTripwire(name: String, reason: String)
     case invalidToolArguments(toolName: String, reason: String)
     case invalidModelResponse(String)
+    case invalidStructuredOutput(String)
     case invalidRunConfig(String)
     case approvalRejected(toolName: String)
     case cancelled
@@ -38,6 +39,8 @@ public enum AgentsError: Error, Equatable, LocalizedError, Sendable {
             return "Invalid arguments for tool '\(toolName)': \(reason)"
         case .invalidModelResponse(let reason):
             return "Invalid model response: \(reason)"
+        case .invalidStructuredOutput(let reason):
+            return "Invalid structured output: \(reason)"
         case .invalidRunConfig(let reason):
             return "Invalid run configuration: \(reason)"
         case .approvalRejected(let toolName):

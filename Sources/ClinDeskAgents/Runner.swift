@@ -1,6 +1,81 @@
 import Foundation
 
 public enum Runner {
+    public static func run<Context: Sendable, Output: Decodable & Sendable>(
+        agent: Agent<Context>,
+        input: String,
+        outputType: Output.Type,
+        outputSchema: JSONValue? = nil,
+        decoder: JSONDecoder = JSONDecoder(),
+        context: Context? = nil,
+        maxTurns: Int? = nil,
+        hooks: RunHooks<Context>? = nil,
+        modelProvider: (any ModelProvider)? = nil,
+        runConfig: RunConfig<Context> = RunConfig(),
+        previousResponseID: String? = nil,
+        autoPreviousResponseID: Bool = false,
+        conversationID: String? = nil,
+        session: (any Session)? = nil
+    ) async throws -> TypedRunResult<Output> {
+        try await run(
+            agent: agent,
+            input: [.message(AgentMessage(role: .user, content: input))],
+            outputType: outputType,
+            outputSchema: outputSchema,
+            decoder: decoder,
+            context: context,
+            maxTurns: maxTurns,
+            hooks: hooks,
+            modelProvider: modelProvider,
+            runConfig: runConfig,
+            previousResponseID: previousResponseID,
+            autoPreviousResponseID: autoPreviousResponseID,
+            conversationID: conversationID,
+            session: session
+        )
+    }
+
+    public static func run<Context: Sendable, Output: Decodable & Sendable>(
+        agent: Agent<Context>,
+        input: [ModelInputItem],
+        outputType: Output.Type,
+        outputSchema: JSONValue? = nil,
+        decoder: JSONDecoder = JSONDecoder(),
+        context: Context? = nil,
+        maxTurns: Int? = nil,
+        hooks: RunHooks<Context>? = nil,
+        modelProvider: (any ModelProvider)? = nil,
+        runConfig: RunConfig<Context> = RunConfig(),
+        previousResponseID: String? = nil,
+        autoPreviousResponseID: Bool = false,
+        conversationID: String? = nil,
+        session: (any Session)? = nil
+    ) async throws -> TypedRunResult<Output> {
+        let configuredAgent = outputSchema.map { agent.clone(outputSchema: $0) } ?? agent
+        let result = try await run(
+            agent: configuredAgent,
+            input: input,
+            context: context,
+            maxTurns: maxTurns,
+            hooks: hooks,
+            modelProvider: modelProvider,
+            runConfig: runConfig,
+            previousResponseID: previousResponseID,
+            autoPreviousResponseID: autoPreviousResponseID,
+            conversationID: conversationID,
+            session: session
+        )
+        let decoded = try StructuredOutput.decode(outputType, from: result.finalOutput, decoder: decoder)
+        return TypedRunResult(
+            finalOutput: decoded,
+            rawFinalOutput: result.finalOutput,
+            lastAgentName: result.lastAgentName,
+            trace: result.trace,
+            newItems: result.newItems,
+            responseID: result.responseID
+        )
+    }
+
     public static func run<Context: Sendable>(
         agent: Agent<Context>,
         input: String,
