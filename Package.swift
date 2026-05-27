@@ -15,10 +15,6 @@ let package = Package(
             name: "ClinDeskAgents",
             targets: ["ClinDeskAgents"]
         ),
-        .library(
-            name: "ClinDeskAgentsOpenAI",
-            targets: ["ClinDeskAgentsOpenAI"]
-        ),
         .executable(
             name: "BasicExample",
             targets: ["BasicExample"]
@@ -28,23 +24,17 @@ let package = Package(
         .target(
             name: "ClinDeskAgents"
         ),
-        .target(
-            name: "ClinDeskAgentsOpenAI",
-            dependencies: ["ClinDeskAgents"]
-        ),
         .executableTarget(
             name: "BasicExample",
             dependencies: [
-                "ClinDeskAgents",
-                "ClinDeskAgentsOpenAI"
+                "ClinDeskAgents"
             ],
             path: "Examples/Basic"
         ),
         .testTarget(
             name: "ClinDeskAgentsTests",
             dependencies: [
-                "ClinDeskAgents",
-                "ClinDeskAgentsOpenAI"
+                "ClinDeskAgents"
             ]
         )
     ]

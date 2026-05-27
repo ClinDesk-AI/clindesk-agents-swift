@@ -25,4 +25,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build iOS simulator
-        run: xcodebuild -scheme ClinDeskAgentsOpenAI -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
+        run: xcodebuild -scheme ClinDeskAgents -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO

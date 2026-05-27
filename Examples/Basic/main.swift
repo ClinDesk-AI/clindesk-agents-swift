@@ -1,5 +1,28 @@
 import ClinDeskAgents
-import ClinDeskAgentsOpenAI
+
+struct LocalDemoModel: Model {
+    func getResponse<Context: Sendable>(_ request: ModelRequest<Context>) async throws -> ModelResponse {
+        if request.input.contains(where: isClinicLookupOutput) {
+            return ModelResponse(output: [
+                .message(AgentMessage(role: .assistant, content: "The clinic is open Monday to Friday."))
+            ])
+        }
+        return ModelResponse(output: [
+            .functionCall(FunctionCall(
+                callID: "call_clinic_lookup",
+                name: "clinic_lookup",
+                arguments: ["topic": "hours"]
+            ))
+        ])
+    }
+
+    private func isClinicLookupOutput(_ item: ModelInputItem) -> Bool {
+        guard case .functionCallOutput(let output) = item else {
+            return false
+        }
+        return output.callID == "call_clinic_lookup"
+    }
+}
 
 struct ClinicLookupInput: Decodable, Sendable {
     let topic: String
@@ -27,14 +50,12 @@ let agent: Agent<Void> = Agent(
     name: "Clinic Assistant",
     instructions: .text("Answer briefly and use clinic_lookup for clinic facts."),
     tools: [clinicLookup],
-    modelName: "gpt-5.4-mini"
+    model: LocalDemoModel()
 )
 
-let provider = OpenAIProvider()
 let result = try await Runner.run(
     agent: agent,
-    input: "When is the clinic open?",
-    modelProvider: provider
+    input: "When is the clinic open?"
 )
 
 print(result.finalOutput)

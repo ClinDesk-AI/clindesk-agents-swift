@@ -1,9 +1,56 @@
 import Foundation
 
-public enum ToolNotFoundBehavior: Sendable {
-    case throwError
-    case returnErrorToModel
+public enum ToolNotFoundBehavior: String, Codable, Equatable, Sendable {
+    case raiseError = "raise_error"
+    case returnErrorToModel = "return_error_to_model"
 }
+
+public enum ReasoningItemIDPolicy: String, Codable, Equatable, Sendable {
+    case preserve
+    case omit
+}
+
+public struct ToolErrorFormatterArgs<Context: Sendable>: Sendable {
+    public enum Kind: String, Sendable {
+        case approvalRejected = "approval_rejected"
+        case toolNotFound = "tool_not_found"
+    }
+
+    public enum ToolType: String, Sendable {
+        case function
+        case computer
+        case shell
+        case applyPatch = "apply_patch"
+        case custom
+    }
+
+    public var kind: Kind
+    public var toolType: ToolType
+    public var toolName: String
+    public var callID: String
+    public var defaultMessage: String
+    public var runContext: RunContext<Context>
+
+    public init(
+        kind: Kind,
+        toolType: ToolType,
+        toolName: String,
+        callID: String,
+        defaultMessage: String,
+        runContext: RunContext<Context>
+    ) {
+        self.kind = kind
+        self.toolType = toolType
+        self.toolName = toolName
+        self.callID = callID
+        self.defaultMessage = defaultMessage
+        self.runContext = runContext
+    }
+}
+
+public typealias ToolErrorFormatter<Context: Sendable> = @Sendable (
+    ToolErrorFormatterArgs<Context>
+) async throws -> String?
 
 public struct ToolExecutionConfig: Equatable, Sendable {
     public var maxFunctionToolConcurrency: Int?
@@ -13,11 +60,22 @@ public struct ToolExecutionConfig: Equatable, Sendable {
     }
 }
 
-public typealias HandoffInputFilter = @Sendable ([ModelInputItem]) async throws -> [ModelInputItem]
-public typealias SessionInputCallback = @Sendable (
-    _ history: [ModelInputItem],
-    _ newInput: [ModelInputItem]
-) async throws -> [ModelInputItem]
+public enum RunConfigDefaults {
+    public static let defaultMaxTurns = 10
+
+    public static func traceIncludeSensitiveData(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        let value = environment["CLINDESK_AGENTS_TRACE_INCLUDE_SENSITIVE_DATA"] ?? "true"
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "1", "true", "yes", "on":
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 public typealias CallModelInputFilter<Context: Sendable> = @Sendable (
     CallModelData<Context>
 ) async throws -> ModelInputData
@@ -47,57 +105,69 @@ public struct CallModelData<Context: Sendable>: Sendable {
 public struct RunConfig<Context: Sendable>: Sendable {
     public var model: (any Model)?
     public var modelName: String?
+    public var modelProvider: (any ModelProvider)?
     public var modelSettings: ModelSettings?
-    public var handoffInputFilter: HandoffInputFilter?
+    public var handoffInputFilter: HandoffInputFilter<Context>?
+    public var nestHandoffHistory: Bool
+    public var handoffHistoryMapper: HandoffHistoryMapper?
     public var maxTurns: Int?
     public var workflowName: String
     public var traceID: String?
     public var groupID: String?
-    public var traceMetadata: [String: String]
+    public var traceMetadata: [String: JSONValue]
     public var traceIncludeSensitiveData: Bool
     public var tracingDisabled: Bool
     public var tracingProcessors: [any TracingProcessor]
     public var hooks: RunHooks<Context>
     public var session: (any Session)?
     public var sessionInputCallback: SessionInputCallback?
+    public var sessionSettings: SessionSettings?
+    public var reasoningItemIDPolicy: ReasoningItemIDPolicy?
     public var callModelInputFilter: CallModelInputFilter<Context>?
-    public var previousResponseID: String?
-    public var autoPreviousResponseID: Bool
-    public var conversationID: String?
     public var inputGuardrails: [InputGuardrail<Context>]
     public var outputGuardrails: [OutputGuardrail<Context>]
+    public var toolErrorFormatter: ToolErrorFormatter<Context>?
     public var toolNotFoundBehavior: ToolNotFoundBehavior
     public var toolExecution: ToolExecutionConfig
+    public var errorHandlers: RunErrorHandlers<Context>?
+    var streamEventHandler: RunnerStreamEventHandler<Context>?
 
     public init(
         model: (any Model)? = nil,
         modelName: String? = nil,
+        modelProvider: (any ModelProvider)? = nil,
         modelSettings: ModelSettings? = nil,
-        handoffInputFilter: HandoffInputFilter? = nil,
-        maxTurns: Int? = 10,
+        handoffInputFilter: HandoffInputFilter<Context>? = nil,
+        nestHandoffHistory: Bool = false,
+        handoffHistoryMapper: HandoffHistoryMapper? = nil,
+        maxTurns: Int? = RunConfigDefaults.defaultMaxTurns,
         workflowName: String = "Agent workflow",
         traceID: String? = nil,
         groupID: String? = nil,
-        traceMetadata: [String: String] = [:],
-        traceIncludeSensitiveData: Bool = false,
+        traceMetadata: [String: JSONValue] = [:],
+        traceIncludeSensitiveData: Bool = RunConfigDefaults.traceIncludeSensitiveData(),
         tracingDisabled: Bool = false,
         tracingProcessors: [any TracingProcessor] = [],
         hooks: RunHooks<Context> = RunHooks(),
         session: (any Session)? = nil,
         sessionInputCallback: SessionInputCallback? = nil,
+        sessionSettings: SessionSettings? = nil,
+        reasoningItemIDPolicy: ReasoningItemIDPolicy? = nil,
         callModelInputFilter: CallModelInputFilter<Context>? = nil,
-        previousResponseID: String? = nil,
-        autoPreviousResponseID: Bool = false,
-        conversationID: String? = nil,
         inputGuardrails: [InputGuardrail<Context>] = [],
         outputGuardrails: [OutputGuardrail<Context>] = [],
-        toolNotFoundBehavior: ToolNotFoundBehavior = .throwError,
-        toolExecution: ToolExecutionConfig = ToolExecutionConfig()
+        toolErrorFormatter: ToolErrorFormatter<Context>? = nil,
+        toolNotFoundBehavior: ToolNotFoundBehavior = .raiseError,
+        toolExecution: ToolExecutionConfig = ToolExecutionConfig(),
+        errorHandlers: RunErrorHandlers<Context>? = nil
     ) {
         self.model = model
         self.modelName = modelName
+        self.modelProvider = modelProvider
         self.modelSettings = modelSettings
         self.handoffInputFilter = handoffInputFilter
+        self.nestHandoffHistory = nestHandoffHistory
+        self.handoffHistoryMapper = handoffHistoryMapper
         self.maxTurns = maxTurns
         self.workflowName = workflowName
         self.traceID = traceID
@@ -109,35 +179,15 @@ public struct RunConfig<Context: Sendable>: Sendable {
         self.hooks = hooks
         self.session = session
         self.sessionInputCallback = sessionInputCallback
+        self.sessionSettings = sessionSettings
+        self.reasoningItemIDPolicy = reasoningItemIDPolicy
         self.callModelInputFilter = callModelInputFilter
-        self.previousResponseID = previousResponseID
-        self.autoPreviousResponseID = autoPreviousResponseID
-        self.conversationID = conversationID
         self.inputGuardrails = inputGuardrails
         self.outputGuardrails = outputGuardrails
+        self.toolErrorFormatter = toolErrorFormatter
         self.toolNotFoundBehavior = toolNotFoundBehavior
         self.toolExecution = toolExecution
-    }
-}
-
-public struct RunResult: Equatable, Sendable {
-    public var finalOutput: String
-    public var lastAgentName: String
-    public var trace: Trace
-    public var newItems: [ModelInputItem]
-    public var responseID: String?
-
-    public init(
-        finalOutput: String,
-        lastAgentName: String,
-        trace: Trace,
-        newItems: [ModelInputItem],
-        responseID: String? = nil
-    ) {
-        self.finalOutput = finalOutput
-        self.lastAgentName = lastAgentName
-        self.trace = trace
-        self.newItems = newItems
-        self.responseID = responseID
+        self.errorHandlers = errorHandlers
+        self.streamEventHandler = nil
     }
 }

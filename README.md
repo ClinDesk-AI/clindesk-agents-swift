@@ -1,8 +1,8 @@
 # ClinDesk Agents SDK
 
-🧑‍⚕️ **ClinDesk Agents SDK** is a Swift package inspired by OpenAI's Agents SDK and adapted for native Apple platforms. It mirrors the SDK's core concepts as closely as practical in Swift: agents, tools, handoffs, guardrails, sessions, tracing, model providers, and the runner loop.
+🧑‍⚕️ **ClinDesk Agents SDK** is a local-first Swift agent runtime for native Apple platforms. It keeps the familiar Agents SDK shape: agents, tools, handoffs, guardrails, sessions, tracing, model providers, and the runner loop, while leaving model execution entirely to local, on-device, or application-supplied `Model` implementations.
 
-ClinDesk is a **privacy-first clinic workspace** for macOS. This package extracts the reusable agent runtime shape behind that work into an open source Swift package that can also be used from iOS applications.
+ClinDesk is a privacy-first clinic workspace for macOS. This package extracts the reusable agent runtime behind that work into an open source Swift package that can also be used from iOS applications.
 
 This project is open source, free to use, and MIT licensed.
 
@@ -11,16 +11,16 @@ This project is open source, free to use, and MIT licensed.
 ## ✨ What It Includes
 
 - 🤖 `Agent` definitions with instructions, tools, handoffs, guardrails, model settings, typed context, and tool-use behavior.
-- 🏃 `Runner.run` and `Runner.runStream` for model turns, function tools, handoffs, sessions, tracing, and final output.
+- 🏃 `Runner.run` and `Runner.runStream` for model turns, function tools, local tools, handoffs, sessions, tracing, and final output.
 - 📋 Structured outputs with typed `Runner.run(..., outputType:)` results.
 - 🧰 `FunctionTool` support with Swift `Codable` inputs, JSON schemas, enablement checks, approval callbacks, and tool guardrails.
 - 🛡️ Input and output guardrails at both the agent and run-configuration levels.
 - 🔁 Handoffs between agents, including input filters.
+- 🗺️ Extension helpers for handoff prompts, handoff filters, tool-output trimming, and agent graph visualization.
 - 💬 `Session` and `MemorySession` for conversation history.
-- 📡 `ClinDeskAgentsOpenAI`, an OpenAI Responses API model provider.
-- 🧪 Provider-neutral protocols so apps can plug in OpenAI, local, or on-device models.
+- 🧪 Provider-neutral `Model` and `ModelProvider` protocols for local or on-device model backends.
 
-The current Swift API is aligned with the core public concepts in OpenAI Agents SDK `v0.17.3`, while leaving out Python-specific implementation details that do not translate cleanly to Swift.
+The Swift API mirrors the core public agent-runtime concepts from OpenAI's Agents SDK where those concepts make sense in Swift, while omitting Python-specific and cloud-provider-specific implementation details.
 
 ## 📦 Installation
 
@@ -30,15 +30,14 @@ Add the package to your Swift Package Manager dependencies:
 .package(
     name: "clindesk-agents",
     url: "https://github.com/ClinDesk-AI/clindesk-agents-swift.git",
-    from: "0.2.1"
+    from: "1.0.0"
 )
 ```
 
-Then add one or both products to your target:
+Then add the product to your target:
 
 ```swift
 .product(name: "ClinDeskAgents", package: "clindesk-agents")
-.product(name: "ClinDeskAgentsOpenAI", package: "clindesk-agents")
 ```
 
 Supported platforms:
@@ -52,7 +51,42 @@ Supported platforms:
 
 ```swift
 import ClinDeskAgents
-import ClinDeskAgentsOpenAI
+
+struct LocalDemoModel: Model {
+    func getResponse(request: ModelRequest) async throws -> ModelResponse {
+        if request.input.contains(where: { item in
+            if case .message(let message) = item {
+                return message.content.localizedCaseInsensitiveContains("weather")
+            }
+            return false
+        }) {
+            return ModelResponse(output: [
+                .functionCall(FunctionCall(
+                    callID: "call_weather",
+                    name: "weather",
+                    arguments: #"{"city":"Cancun"}"#
+                ))
+            ])
+        }
+
+        return ModelResponse(output: [
+            .message(AgentMessage(role: .assistant, content: "It is sunny in Cancun."))
+        ])
+    }
+
+    func streamResponse(request: ModelRequest) -> AsyncThrowingStream<ModelStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    continuation.yield(.completed(try await getResponse(request: request)))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+}
 
 struct WeatherInput: Decodable, Sendable {
     let city: String
@@ -80,30 +114,27 @@ let agent = Agent<Void>(
     name: "Clinic Assistant",
     instructions: .text("Answer briefly and use tools when useful."),
     tools: [weatherTool],
-    modelName: "gpt-5.4-mini"
+    model: LocalDemoModel()
 )
 
 let result = try await Runner.run(
     agent: agent,
-    input: "What is the weather in Cancun?",
-    modelProvider: OpenAIProvider()
+    input: "What is the weather in Cancun?"
 )
 
 print(result.finalOutput)
 ```
 
-Set `OPENAI_API_KEY` in the environment when using `ClinDeskAgentsOpenAI`.
-
 ## 🧠 Agents
 
-Agents follow the same shape as the OpenAI Agents SDK: they carry instructions, tools, handoffs, optional model configuration, guardrails, and output behavior.
+Agents carry instructions, tools, handoffs, optional model configuration, guardrails, and output behavior.
 
 ```swift
 let agent = Agent<Void>(
     name: "Triage",
     handoffDescription: "Routes clinic requests to the right specialist agent.",
     instructions: .text("Triage the request and hand off when needed."),
-    modelName: "gpt-5.4-mini"
+    modelName: "local-triage"
 )
 ```
 
@@ -149,6 +180,8 @@ let lookupAppointment = FunctionTool<Void>(
     ])
 }
 ```
+
+The runtime also includes local tool surfaces such as computer, shell, apply-patch, and custom tools. Those tools execute only through code you provide or explicitly configure.
 
 ## 🔁 Handoffs
 
@@ -198,7 +231,6 @@ let session = MemorySession(id: "patient-thread")
 let result = try await Runner.run(
     agent: agent,
     input: "Remember this for the next message.",
-    modelProvider: OpenAIProvider(),
     session: session
 )
 ```
@@ -227,39 +259,34 @@ let result = try await Runner.run(
     agent: agent,
     input: "Need an appointment tomorrow",
     outputType: TriageFrame.self,
-    outputSchema: schema,
-    modelProvider: OpenAIProvider()
+    outputSchema: schema
 )
 
 print(result.finalOutput.intent)
 ```
 
-## 📡 OpenAI Provider
+## 🖥️ Local Models
 
-`ClinDeskAgentsOpenAI` includes an adapter for the OpenAI Responses API.
+The core target is model-provider neutral. You can attach a concrete `Model` directly to an agent or provide a `ModelProvider` through `RunConfig`.
+
+For multiple local backends, `MultiProvider` routes namespaced model IDs by prefix:
 
 ```swift
-let provider = OpenAIProvider(
-    apiKey: ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? ""
+let provider = MultiProvider(
+    providerMap: MultiProviderMap([
+        "clinic": clinicProvider,
+        "scribe": scribeProvider
+    ])
 )
+
+let agent = Agent<Void>(name: "Triage", modelName: "clinic/triage")
 ```
-
-When an agent or run config does not set a model name, `OpenAIProvider` follows the OpenAI Agents SDK default model behavior: it reads `OPENAI_DEFAULT_MODEL` and otherwise uses `gpt-5.4-mini`.
-
-The core `ClinDeskAgents` target is provider-neutral. It only sends data where your configured `Model` sends it.
-
-## 🍎 Apple Platform Use
-
-This package is designed for Swift concurrency and works in macOS and iOS applications through Swift Package Manager.
-
-In an app target, inject a provider and call the runner from an async context:
 
 ```swift
 let result = try await Runner.run(
     agent: agent,
     input: userMessage,
     context: clinicContext,
-    modelProvider: provider,
     runConfig: RunConfig(
         workflowName: "Clinic workspace",
         traceIncludeSensitiveData: false
@@ -267,7 +294,13 @@ let result = try await Runner.run(
 )
 ```
 
-For privacy-sensitive workflows, keep the core runtime provider-neutral and choose the `Model` implementation that matches your deployment.
+When no model name is configured, the package uses `CLINDESK_AGENTS_DEFAULT_MODEL` and otherwise falls back to `"local"` for provider lookup.
+
+Models that return `true` from `supportsDefaultPromptCacheKey` receive a generated `prompt_cache_key` in `ModelSettings.extraArgs` unless the caller already supplied one. The key follows the upstream grouping order of session, trace group, then run, and remains stable across approval resume flows.
+
+Sensitive model and tool payloads stay out of debug logs by default. Use `CLINDESK_AGENTS_DONT_LOG_MODEL_DATA` or `CLINDESK_AGENTS_DONT_LOG_TOOL_DATA` with `0`, `1`, `true`, or `false` to mirror the upstream debug toggles with local-only names.
+
+Use `AgentsLogger.shared` for package-scoped diagnostics when integrating with Apple's unified logging system.
 
 ## 🧪 Development
 
@@ -275,12 +308,11 @@ For privacy-sensitive workflows, keep the core runtime provider-neutral and choo
 swift test
 ```
 
-The test suite uses fake models and injected OpenAI HTTP transports, so it does not require network access or an API key.
+The test suite uses fake and local models, so it does not require network access or API keys.
+
+Release notes are tracked in [CHANGELOG.md](CHANGELOG.md). The current release is the
+local-model-only `1.0.0` parity release.
 
 ## 📄 License
 
 MIT. See [LICENSE](LICENSE).
-
-## 🙏 Acknowledgements
-
-This project is inspired by the ideas and terminology in OpenAI's Agents SDK. The implementation is written in Swift for ClinDesk and native Apple applications while staying aligned with the upstream SDK's public concepts wherever practical.

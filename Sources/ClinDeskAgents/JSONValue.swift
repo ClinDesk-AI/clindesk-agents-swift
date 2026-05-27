@@ -98,6 +98,27 @@ public extension JSONValue {
         return nil
     }
 
+    var arrayValue: [JSONValue]? {
+        if case .array(let value) = self {
+            return value
+        }
+        return nil
+    }
+
+    var boolValue: Bool? {
+        if case .bool(let value) = self {
+            return value
+        }
+        return nil
+    }
+
+    var intValue: Int? {
+        if case .number(let value) = self {
+            return Int(value)
+        }
+        return nil
+    }
+
     subscript(key: String) -> JSONValue? {
         guard case .object(let object) = self else {
             return nil
